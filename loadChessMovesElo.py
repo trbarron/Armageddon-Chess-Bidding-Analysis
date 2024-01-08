@@ -16,16 +16,12 @@ def connect_to_db():
         print(f"Error connecting to the database: {e}")
         return None
 
-# Function to insert data into the database
-def insert_data(cursor, fen_curr, fen_prev, elo, time_control):
-    try:
-        query = "INSERT INTO moves_compared_to_elo (fen_curr, fen_prev, elo, time_control) VALUES (%s, %s, %s, %s);"
-        cursor.execute(query, (fen_curr, fen_prev, elo, time_control))
-    except psycopg2.Error as e:
-        print(f"Error inserting data into the database: {e}")
-
 # Main function to process the PGN file and insert data into the database
-def process_pgn_file(file_path):
+def process_pgn_file(file_path, batch_size=1000):
+    conn = connect_to_db()
+    if not conn:
+        return
+
     try:
         with open(file_path) as file:
             pgn_text = file.read()
@@ -36,6 +32,7 @@ def process_pgn_file(file_path):
     pgn_io = io.StringIO(pgn_text)
     game = chess.pgn.read_game(pgn_io)
 
+    insert_data = []
     while game:
         try:
             board = game.board()
@@ -52,17 +49,18 @@ def process_pgn_file(file_path):
                     continue
                 elo = int(game.headers[elo_key])
 
-                conn = connect_to_db()
-                if conn:
+                insert_data.append((fen_curr, fen_prev, elo, time_control))
+
+                if len(insert_data) >= batch_size:
                     try:
                         cursor = conn.cursor()
-                        insert_data(cursor, fen_curr, fen_prev, elo, time_control)
+                        query = "INSERT INTO moves_compared_to_elo (fen_curr, fen_prev, elo, time_control) VALUES (%s, %s, %s, %s);"
+                        cursor.executemany(query, insert_data)
                         conn.commit()
+                        cursor.close()
+                        insert_data = []
                     except Exception as e:
                         print(f"Error during database operation: {e}")
-                    finally:
-                        cursor.close()
-                        conn.close()
 
                 fen_prev = fen_curr
 
@@ -71,4 +69,17 @@ def process_pgn_file(file_path):
 
         game = chess.pgn.read_game(pgn_io)
 
-process_pgn_file('./data/lichess_db_standard_rated_2014-09.pgn')
+    # Insert any remaining data
+    if insert_data:
+        try:
+            cursor = conn.cursor()
+            query = "INSERT INTO moves_compared_to_elo (fen_curr, fen_prev, elo, time_control) VALUES (%s, %s, %s, %s);"
+            cursor.executemany(query, insert_data)
+            conn.commit()
+            cursor.close()
+        except Exception as e:
+            print(f"Error during database operation: {e}")
+
+    conn.close()
+
+process_pgn_file('./data/lichess_db_standard_rated_2014-09.pgn', batch_size=100000)
